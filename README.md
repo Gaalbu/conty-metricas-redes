@@ -23,7 +23,7 @@ Idempotência: `UNIQUE (connection_id, external_id, captured_at)` no banco e `ON
 
 ## Como rodar
 
-Node 22 ou maior.
+Node 22.13 ou maior (primeira versão com `node:sqlite` sem flag).
 
 ```bash
 npm install
