@@ -17,9 +17,13 @@ Laço `for` até `maxAttempts`, sem `while (true)`.
 - 429: espera `min(retryAfterSeconds, maxWaitSeconds)`.
 - Falha na última tentativa: `503 {"error":"provedor indisponível","attempts":<teto>}`. Não espera depois da última.
 
-Padrão: 4 tentativas, teto de 30 s. Variáveis `MAX_ATTEMPTS` e `MAX_WAIT_SECONDS`.
+- Cada tentativa tem prazo (`attemptTimeoutSeconds`, padrão 10 s). No prazo, o `AbortSignal` passado a `listPosts` é abortado e a tentativa conta como timeout.
+
+Padrão: 4 tentativas, teto de espera de 30 s, prazo de 10 s por tentativa. Variáveis `MAX_ATTEMPTS`, `MAX_WAIT_SECONDS` e `ATTEMPT_TIMEOUT_SECONDS`.
 
 Idempotência: `UNIQUE (connection_id, external_id, captured_at)` no banco e `ON CONFLICT DO NOTHING`; `result.changes` diz se a linha entrou ou era duplicata. A leitura devolve a janela de maior `captured_at` de cada post, não a soma das janelas. `fetched_at` é o instante da primeira inserção daquela janela.
+
+Validação: o lote do provedor é conferido inteiro antes de gravar. `external_id` vazio, views negativas, fracionárias ou acima do inteiro seguro e `captured_at` ilegível dão `502 resposta inválida do provedor`, sem retry e sem gravar nada. `captured_at` vira ISO UTC canônico, então `09:00-03:00` e `12:00Z` são a mesma captura e a mais recente é decidida pelo instante, não pelo texto. A mesma captura com views diferentes é `409` e desfaz o lote. Capturas gravadas antes da normalização são convertidas ao abrir o banco; se colidirem com uma já canônica, ficam intactas e o app avisa.
 
 ## Como rodar
 
@@ -77,8 +81,8 @@ Paginação do provedor, refresh de token e stories.
 
 Comece por `src/sync.ts`. O sync é um laço `for` limitado por `maxAttempts`: timeout e indisponibilidade esperam `2^(n-1)` segundos, 429 espera o `Retry-After`, e as duas esperas param no teto. Na última falha devolve 503 `provedor indisponível` sem esperar de novo. A espera passa por um relógio injetado, então o teste confere os segundos sem dormir: Retry-After 7 grava `[7]`, Retry-After 90 com teto 30 grava `[30]`, timeout com teto 3 faz 3 chamadas e espera `[1, 2]`. A mesma janela não entra duas vezes por causa de `UNIQUE (connection_id, external_id, captured_at)` no banco; a leitura pega a janela mais recente de cada post, então p1=10, p2=20 e p3=5 somam 35, e não 55.
 
-Testes: `npm test` com 6 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste da janela repetida.
+Testes: `npm test` com 19 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste da janela repetida.
 
 Ficou de fora: paginação do provedor, refresh de token e stories.
 
-IA: código, testes e README escritos com assistente de código (Claude Code), a partir de um plano com as regras do desafio. O assistente rodou os testes e o typecheck e colou a resposta real acima.
+IA: código, testes e README escritos com assistente de código (Claude Code), a partir de um plano com as regras do desafio. A validação do lote, os instantes canônicos e o prazo por tentativa vieram de programação em pares: o Codex auditou a entrega e escreveu os testes que reproduziam os defeitos; o Claude Code implementou, validou e publicou.
