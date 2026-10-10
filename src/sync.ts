@@ -12,6 +12,7 @@ export type SyncOutcome =
   | { status: 404; body: { error: string } }
   | { status: 409; body: { error: string; external_id: string; captured_at: string } }
   | { status: 502; body: { error: string; index: number; reason: string } }
+  | { status: 502; body: { error: string; connection_id: string; platform: string } }
   | { status: 503; body: { error: string; attempts: number; last_failure: string } };
 
 // Espera antes da próxima tentativa. 429 respeita o Retry-After; timeout e
@@ -121,7 +122,19 @@ export async function syncConnection(
           },
         };
       }
-      if (!(error instanceof ProviderFailure)) throw error;
+      if (!(error instanceof ProviderFailure)) {
+        // Erro fora do contrato do adaptador: não é falha transitória, então não
+        // entra no retry. A mensagem original pode carregar o token e fica fora
+        // da resposta e do log; só o tipo do erro e a conexão são registrados.
+        const kind = error instanceof Error ? error.name : typeof error;
+        console.error(
+          JSON.stringify({ msg: "provider.unexpected_error", kind, connection_id: connectionId, platform: connection.platform }),
+        );
+        return {
+          status: 502,
+          body: { error: "falha inesperada do provedor", connection_id: connectionId, platform: connection.platform },
+        };
+      }
       lastFailure = error.kind;
       if (attempt === options.maxAttempts) break;
       await clock.wait(waitSeconds(error, attempt, options.maxWaitSeconds));

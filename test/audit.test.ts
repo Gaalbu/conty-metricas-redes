@@ -155,3 +155,29 @@ describe("capturas gravadas antes da normalização", () => {
     }
   });
 });
+
+describe("erro inesperado do adaptador", () => {
+  it("responde 502 com contexto, sem token, sem retry e sem gravar", async () => {
+    const db = openDatabase();
+    databases.push(db);
+    const leaky = { listPosts: async () => { throw new TypeError("Cannot read properties of undefined (token demo_secret)"); } };
+    const clock = new FakeClock("2026-06-02T12:00:00.000Z");
+    const app = createApp({ db, provider: leaky, clock });
+    const created = await app.request("/connections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ platform: "youtube", creator_id: "crt_ana" }),
+    });
+    const { id } = (await created.json()) as { id: string };
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await app.request(`/connections/${id}/sync`, { method: "POST" });
+    error.mockRestore();
+
+    expect(res.status).toBe(502);
+    const body = JSON.stringify(await res.json());
+    expect(body).toContain("falha inesperada do provedor");
+    expect(body).not.toContain("demo_secret");
+    expect(clock.waits).toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM post_snapshots").get()).toEqual({ count: 0 });
+  });
+});
