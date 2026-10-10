@@ -3,7 +3,7 @@ import { createApp } from "../src/app.ts";
 import { openDatabase } from "../src/db.ts";
 import { ProviderFailure } from "../src/provider.ts";
 import type { PostSnapshot } from "../src/provider.ts";
-import { FakeClock, ScriptedProvider } from "./support.ts";
+import { FakeClock, HANG, ScriptedProvider } from "./support.ts";
 
 const NOW = "2026-06-01T12:00:00.000Z";
 
@@ -97,5 +97,57 @@ describe("sincronização de métricas", () => {
     });
     expect(res.status).toBe(400);
     expect((await app.request("/connections/con_x/sync", { method: "POST" })).status).toBe(404);
+  });
+});
+
+describe("prazo por tentativa", () => {
+  it("provedor que não responde estoura o prazo, tem o pedido abortado e a próxima tentativa grava", async () => {
+    const provider = new ScriptedProvider([
+      HANG,
+      [{ external_id: "p1", views: 7, captured_at: "2026-06-01T10:00:00.000Z" }],
+    ]);
+    const clock = new FakeClock(NOW);
+    const app = createApp({ db: openDatabase(), provider, clock, options: { attemptTimeoutSeconds: 10 } });
+    const created = await app.request("/connections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ platform: "tiktok", creator_id: "crt_ana" }),
+    });
+    const { id } = (await created.json()) as { id: string };
+
+    const pending = app.request(`/connections/${id}/sync`, { method: "POST" });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(provider.calls).toBe(1);
+    clock.advance(10);
+
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ attempts: 2, inserted: 1 });
+    expect(provider.signals[0]?.aborted).toBe(true);
+    expect(provider.signals[1]?.aborted).toBe(false);
+    expect(clock.waits).toEqual([1]);
+    expect(clock.pendingTimers()).toBe(0);
+  });
+
+  it("provedor travado em todas as tentativas termina em 503 em vez de prender a request", async () => {
+    const provider = new ScriptedProvider([HANG]);
+    const clock = new FakeClock(NOW);
+    const app = createApp({ db: openDatabase(), provider, clock, options: { maxAttempts: 2, attemptTimeoutSeconds: 5 } });
+    const created = await app.request("/connections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ platform: "x", creator_id: "crt_ana" }),
+    });
+    const { id } = (await created.json()) as { id: string };
+
+    const pending = app.request(`/connections/${id}/sync`, { method: "POST" });
+    for (let i = 0; i < 2; i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+      clock.advance(5);
+    }
+    const res = await pending;
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ attempts: 2, last_failure: "timeout" });
+    expect(provider.signals.every((signal) => signal.aborted)).toBe(true);
   });
 });

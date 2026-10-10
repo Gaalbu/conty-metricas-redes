@@ -19,7 +19,9 @@ export class ProviderFailure extends Error {
   }
 }
 
-// Única borda com a rede social. O token é fictício: não há OAuth aqui.
+// Única borda com a rede social. O token é fictício: não há OAuth aqui. O signal
+// é abortado quando a tentativa estoura o prazo; o adaptador real deve repassá-lo
+// ao fetch para a conexão não ficar pendurada.
 export interface SocialProvider {
-  listPosts(connection: Connection): Promise<PostSnapshot[]>;
+  listPosts(connection: Connection, signal?: AbortSignal): Promise<PostSnapshot[]>;
 }
