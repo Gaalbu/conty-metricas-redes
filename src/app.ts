@@ -16,10 +16,10 @@ export function createApp(deps: {
   db: DatabaseSync;
   provider: SocialProvider;
   clock: Clock;
-  options?: SyncOptions;
+  options?: Partial<SyncOptions>;
 }) {
   const { db, provider, clock } = deps;
-  const options = deps.options ?? DEFAULT_SYNC_OPTIONS;
+  const options: SyncOptions = { ...DEFAULT_SYNC_OPTIONS, ...deps.options };
   const app = new Hono();
 
   app.post("/connections", async (c) => {

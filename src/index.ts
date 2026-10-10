@@ -20,6 +20,7 @@ const demoProvider: SocialProvider = {
 const options = {
   maxAttempts: positiveInt(process.env.MAX_ATTEMPTS, DEFAULT_SYNC_OPTIONS.maxAttempts),
   maxWaitSeconds: positiveInt(process.env.MAX_WAIT_SECONDS, DEFAULT_SYNC_OPTIONS.maxWaitSeconds),
+  attemptTimeoutSeconds: positiveInt(process.env.ATTEMPT_TIMEOUT_SECONDS, DEFAULT_SYNC_OPTIONS.attemptTimeoutSeconds),
 };
 const port = Number(process.env.PORT ?? 43122);
 const app = createApp({ db: openDatabase(), provider: demoProvider, clock: systemClock, options });

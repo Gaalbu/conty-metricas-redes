@@ -4,8 +4,8 @@ import { ProviderFailure } from "./provider.ts";
 import type { Connection, PostSnapshot, SocialProvider } from "./provider.ts";
 import { validateBatch } from "./snapshot.ts";
 
-export type SyncOptions = { maxAttempts: number; maxWaitSeconds: number };
-export const DEFAULT_SYNC_OPTIONS: SyncOptions = { maxAttempts: 4, maxWaitSeconds: 30 };
+export type SyncOptions = { maxAttempts: number; maxWaitSeconds: number; attemptTimeoutSeconds: number };
+export const DEFAULT_SYNC_OPTIONS: SyncOptions = { maxAttempts: 4, maxWaitSeconds: 30, attemptTimeoutSeconds: 10 };
 
 export type SyncOutcome =
   | { status: 200; body: { connection_id: string; attempts: number; inserted: number; duplicates: number } }
@@ -63,6 +63,29 @@ function store(db: DatabaseSync, connectionId: string, posts: PostSnapshot[], fe
   return { inserted, duplicates };
 }
 
+// Uma tentativa nunca espera o provedor além do prazo: no timeout, o signal é
+// abortado e a falha entra no mesmo retry de qualquer timeout.
+async function listWithDeadline(
+  provider: SocialProvider,
+  connection: Connection,
+  clock: Clock,
+  seconds: number,
+): Promise<unknown> {
+  const controller = new AbortController();
+  const timer = clock.timer(seconds);
+  try {
+    return await Promise.race([
+      provider.listPosts(connection, controller.signal),
+      timer.expired.then(() => {
+        controller.abort();
+        throw new ProviderFailure("timeout");
+      }),
+    ]);
+  } finally {
+    timer.cancel();
+  }
+}
+
 export async function syncConnection(
   db: DatabaseSync,
   provider: SocialProvider,
@@ -78,7 +101,9 @@ export async function syncConnection(
   let lastFailure = "unavailable";
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
     try {
-      const batch = validateBatch(await provider.listPosts(connection));
+      const batch = validateBatch(
+        await listWithDeadline(provider, connection, clock, options.attemptTimeoutSeconds),
+      );
       // Resposta malformada não melhora com retry: falha na hora, sem gravar nada.
       if ("invalid" in batch) {
         return { status: 502, body: { error: "resposta inválida do provedor", ...batch.invalid } };
