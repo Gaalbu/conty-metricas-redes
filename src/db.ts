@@ -9,6 +9,19 @@ CREATE TABLE IF NOT EXISTS connections (
   token TEXT NOT NULL
 );
 
+-- Uma linha por sync: quando rodou, quantas tentativas e o que gravou.
+CREATE TABLE IF NOT EXISTS sync_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  connection_id TEXT NOT NULL REFERENCES connections(id),
+  started_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL,
+  status INTEGER NOT NULL,
+  attempts INTEGER,
+  inserted INTEGER NOT NULL,
+  duplicates INTEGER NOT NULL,
+  error TEXT
+);
+
 CREATE TABLE IF NOT EXISTS post_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   connection_id TEXT NOT NULL REFERENCES connections(id),

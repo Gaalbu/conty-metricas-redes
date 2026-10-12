@@ -5,7 +5,7 @@ import { body, BodyError, MAX_BODY_BYTES } from "./body.ts";
 import type { Clock } from "./clock.ts";
 import { createConnection } from "./connections.ts";
 import type { SocialProvider } from "./provider.ts";
-import { DEFAULT_SYNC_OPTIONS, latestPosts, syncConnection } from "./sync.ts";
+import { DEFAULT_SYNC_OPTIONS, latestPosts, syncConnection, syncRuns } from "./sync.ts";
 import type { SyncOptions } from "./sync.ts";
 
 export function createApp(deps: {
@@ -46,6 +46,12 @@ export function createApp(deps: {
       total_views: posts.reduce((sum, post) => sum + post.views, 0),
       posts,
     });
+  });
+
+  app.get("/connections/:id/syncs", (c) => {
+    const id = c.req.param("id");
+    if (!db.prepare("SELECT 1 FROM connections WHERE id = ?").get(id)) return c.json({ error: "conexão não encontrada" }, 404);
+    return c.json({ connection_id: id, syncs: syncRuns(db, id) });
   });
 
   return app;

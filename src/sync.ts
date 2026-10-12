@@ -10,6 +10,7 @@ export const DEFAULT_SYNC_OPTIONS: SyncOptions = { maxAttempts: 4, maxWaitSecond
 export type SyncOutcome =
   | { status: 200; body: { connection_id: string; attempts: number; inserted: number; duplicates: number } }
   | { status: 404; body: { error: string } }
+  | { status: 409; body: { error: string } }
   | { status: 409; body: { error: string; external_id: string; captured_at: string } }
   | { status: 502; body: { error: string; index: number; reason: string } }
   | { status: 502; body: { error: string; connection_id: string; platform: string } }
@@ -95,7 +96,58 @@ async function listWithDeadline(
   }
 }
 
+// Syncs em andamento por banco e conexão: um segundo sync da mesma conexão
+// recebe 409 em vez de disputar as mesmas janelas.
+const running = new WeakMap<DatabaseSync, Set<string>>();
+
 export async function syncConnection(
+  db: DatabaseSync,
+  provider: SocialProvider,
+  clock: Clock,
+  connectionId: string,
+  options: SyncOptions = DEFAULT_SYNC_OPTIONS,
+): Promise<SyncOutcome> {
+  const exists = db.prepare("SELECT 1 FROM connections WHERE id = ?").get(connectionId);
+  if (!exists) return { status: 404, body: { error: "conexão não encontrada" } };
+  const active = running.get(db) ?? new Set<string>();
+  running.set(db, active);
+  if (active.has(connectionId)) {
+    return { status: 409, body: { error: "sync já em andamento para esta conexão" } };
+  }
+  active.add(connectionId);
+  const startedAt = clock.now().toISOString();
+  try {
+    const outcome = await syncOnce(db, provider, clock, connectionId, options);
+    const body = outcome.body as { attempts?: number; inserted?: number; duplicates?: number; error?: string };
+    db.prepare(
+      `INSERT INTO sync_runs (connection_id, started_at, finished_at, status, attempts, inserted, duplicates, error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      connectionId,
+      startedAt,
+      clock.now().toISOString(),
+      outcome.status,
+      body.attempts ?? null,
+      body.inserted ?? 0,
+      body.duplicates ?? 0,
+      body.error ?? null,
+    );
+    return outcome;
+  } finally {
+    active.delete(connectionId);
+  }
+}
+
+export function syncRuns(db: DatabaseSync, connectionId: string) {
+  return db
+    .prepare(
+      `SELECT started_at, finished_at, status, attempts, inserted, duplicates, error
+       FROM sync_runs WHERE connection_id = ? ORDER BY id ASC`,
+    )
+    .all(connectionId);
+}
+
+async function syncOnce(
   db: DatabaseSync,
   provider: SocialProvider,
   clock: Clock,
