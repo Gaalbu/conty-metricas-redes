@@ -25,6 +25,8 @@ Idempotência: `UNIQUE (connection_id, external_id, captured_at)` no banco e `ON
 
 Validação: o lote do provedor é conferido inteiro antes de gravar. `external_id` vazio, views negativas, fracionárias ou acima do inteiro seguro e `captured_at` ilegível dão `502 resposta inválida do provedor`, sem retry e sem gravar nada. `captured_at` vira ISO UTC canônico, então `09:00-03:00` e `12:00Z` são a mesma captura e a mais recente é decidida pelo instante, não pelo texto. A mesma captura com views diferentes é `409` e desfaz o lote. Erro do adaptador fora do contrato (que não é `ProviderFailure`) é `502 falha inesperada do provedor`, sem retry e sem a mensagem original, que pode carregar o token. Capturas gravadas antes da normalização são convertidas ao abrir o banco; se colidirem com uma já canônica, ficam intactas e o app avisa.
 
+**Entrada:** corpo precisa ser `application/json` (senão 415), JSON válido e objeto (senão 400) e ter até 64 KB (senão 413). Campo fora do contrato da rota → 400 com o nome do campo. Erro inesperado vira `500 {"error":"erro interno"}`, sem stack na resposta.
+
 ## Como rodar
 
 Node 22.13 ou maior (primeira versão com `node:sqlite` sem flag).
@@ -81,7 +83,7 @@ Paginação do provedor, refresh de token e stories.
 
 Comece por `src/sync.ts`. O sync é um laço `for` limitado por `maxAttempts`: timeout e indisponibilidade esperam `2^(n-1)` segundos, 429 espera o `Retry-After`, e as duas esperas param no teto. Na última falha devolve 503 `provedor indisponível` sem esperar de novo. A espera passa por um relógio injetado, então o teste confere os segundos sem dormir: Retry-After 7 grava `[7]`, Retry-After 90 com teto 30 grava `[30]`, timeout com teto 3 faz 3 chamadas e espera `[1, 2]`. A mesma janela não entra duas vezes por causa de `UNIQUE (connection_id, external_id, captured_at)` no banco; a leitura pega a janela mais recente de cada post, então p1=10, p2=20 e p3=5 somam 35, e não 55.
 
-Testes: `npm test` com 20 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste da janela repetida.
+Testes: `npm test` com 25 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste da janela repetida.
 
 Ficou de fora: paginação do provedor, refresh de token e stories.
 
