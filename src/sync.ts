@@ -25,8 +25,11 @@ export function waitSeconds(failure: ProviderFailure, attempt: number, maxWaitSe
 }
 
 class SnapshotConflict extends Error {
-  constructor(readonly post: PostSnapshot) {
+  readonly post: PostSnapshot;
+
+  constructor(post: PostSnapshot) {
     super("captura já registrada com outras views");
+    this.post = post;
   }
 }
 
