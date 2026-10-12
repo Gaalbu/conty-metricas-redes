@@ -9,6 +9,19 @@ CREATE TABLE IF NOT EXISTS connections (
   token TEXT NOT NULL
 );
 
+-- Uma linha por sync: quando rodou, quantas tentativas e o que gravou.
+CREATE TABLE IF NOT EXISTS sync_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  connection_id TEXT NOT NULL REFERENCES connections(id),
+  started_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL,
+  status INTEGER NOT NULL,
+  attempts INTEGER,
+  inserted INTEGER NOT NULL,
+  duplicates INTEGER NOT NULL,
+  error TEXT
+);
+
 CREATE TABLE IF NOT EXISTS post_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   connection_id TEXT NOT NULL REFERENCES connections(id),
@@ -24,6 +37,7 @@ export function openDatabase(path = ":memory:"): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
+  addMissingColumns(db);
   canonicalizeLegacyCaptures(db);
   return db;
 }
@@ -48,5 +62,15 @@ function canonicalizeLegacyCaptures(db: DatabaseSync): void {
     console.warn(
       `[métricas] ${kept.length} captura(s) antiga(s) equivalem a outra já salva e não foram normalizadas (ids ${kept.join(", ")}). Reconcilie antes de removê-las.`,
     );
+  }
+}
+
+// last_fetched_at chegou depois da primeira versão: bancos antigos ganham a
+// coluna, preenchida com fetched_at.
+function addMissingColumns(db: DatabaseSync): void {
+  const columns = db.prepare("PRAGMA table_info(post_snapshots)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "last_fetched_at")) {
+    db.exec("ALTER TABLE post_snapshots ADD COLUMN last_fetched_at TEXT");
+    db.exec("UPDATE post_snapshots SET last_fetched_at = fetched_at");
   }
 }

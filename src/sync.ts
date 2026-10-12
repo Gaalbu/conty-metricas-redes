@@ -10,6 +10,7 @@ export const DEFAULT_SYNC_OPTIONS: SyncOptions = { maxAttempts: 4, maxWaitSecond
 export type SyncOutcome =
   | { status: 200; body: { connection_id: string; attempts: number; inserted: number; duplicates: number } }
   | { status: 404; body: { error: string } }
+  | { status: 409; body: { error: string } }
   | { status: 409; body: { error: string; external_id: string; captured_at: string } }
   | { status: 502; body: { error: string; index: number; reason: string } }
   | { status: 502; body: { error: string; connection_id: string; platform: string } }
@@ -25,8 +26,11 @@ export function waitSeconds(failure: ProviderFailure, attempt: number, maxWaitSe
 }
 
 class SnapshotConflict extends Error {
-  constructor(readonly post: PostSnapshot) {
+  readonly post: PostSnapshot;
+
+  constructor(post: PostSnapshot) {
     super("captura já registrada com outras views");
+    this.post = post;
   }
 }
 
@@ -35,25 +39,30 @@ function store(db: DatabaseSync, connectionId: string, posts: PostSnapshot[], fe
   // mesma janela não entra duas vezes. A mesma janela com views diferentes não é
   // duplicata: é conflito, e o lote inteiro é desfeito.
   const insert = db.prepare(
-    `INSERT INTO post_snapshots (connection_id, external_id, views, captured_at, fetched_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO post_snapshots (connection_id, external_id, views, captured_at, fetched_at, last_fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT (connection_id, external_id, captured_at) DO NOTHING`,
   );
   const existing = db.prepare(
     "SELECT views FROM post_snapshots WHERE connection_id = ? AND external_id = ? AND captured_at = ?",
+  );
+  const touch = db.prepare(
+    "UPDATE post_snapshots SET last_fetched_at = ? WHERE connection_id = ? AND external_id = ? AND captured_at = ?",
   );
   let inserted = 0;
   let duplicates = 0;
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const post of posts) {
-      const result = insert.run(connectionId, post.external_id, post.views, post.captured_at, fetchedAt);
+      const result = insert.run(connectionId, post.external_id, post.views, post.captured_at, fetchedAt, fetchedAt);
       if (Number(result.changes) === 1) {
         inserted += 1;
         continue;
       }
       const saved = existing.get(connectionId, post.external_id, post.captured_at) as { views: number };
       if (saved.views !== post.views) throw new SnapshotConflict(post);
+      // A mesma janela buscada de novo: não duplica, mas registra a busca.
+      touch.run(fetchedAt, connectionId, post.external_id, post.captured_at);
       duplicates += 1;
     }
     db.exec("COMMIT");
@@ -87,7 +96,58 @@ async function listWithDeadline(
   }
 }
 
+// Syncs em andamento por banco e conexão: um segundo sync da mesma conexão
+// recebe 409 em vez de disputar as mesmas janelas.
+const running = new WeakMap<DatabaseSync, Set<string>>();
+
 export async function syncConnection(
+  db: DatabaseSync,
+  provider: SocialProvider,
+  clock: Clock,
+  connectionId: string,
+  options: SyncOptions = DEFAULT_SYNC_OPTIONS,
+): Promise<SyncOutcome> {
+  const exists = db.prepare("SELECT 1 FROM connections WHERE id = ?").get(connectionId);
+  if (!exists) return { status: 404, body: { error: "conexão não encontrada" } };
+  const active = running.get(db) ?? new Set<string>();
+  running.set(db, active);
+  if (active.has(connectionId)) {
+    return { status: 409, body: { error: "sync já em andamento para esta conexão" } };
+  }
+  active.add(connectionId);
+  const startedAt = clock.now().toISOString();
+  try {
+    const outcome = await syncOnce(db, provider, clock, connectionId, options);
+    const body = outcome.body as { attempts?: number; inserted?: number; duplicates?: number; error?: string };
+    db.prepare(
+      `INSERT INTO sync_runs (connection_id, started_at, finished_at, status, attempts, inserted, duplicates, error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      connectionId,
+      startedAt,
+      clock.now().toISOString(),
+      outcome.status,
+      body.attempts ?? null,
+      body.inserted ?? 0,
+      body.duplicates ?? 0,
+      body.error ?? null,
+    );
+    return outcome;
+  } finally {
+    active.delete(connectionId);
+  }
+}
+
+export function syncRuns(db: DatabaseSync, connectionId: string) {
+  return db
+    .prepare(
+      `SELECT started_at, finished_at, status, attempts, inserted, duplicates, error
+       FROM sync_runs WHERE connection_id = ? ORDER BY id ASC`,
+    )
+    .all(connectionId);
+}
+
+async function syncOnce(
   db: DatabaseSync,
   provider: SocialProvider,
   clock: Clock,
@@ -147,13 +207,19 @@ export async function syncConnection(
   };
 }
 
-export type LatestPost = { external_id: string; views: number; captured_at: string; fetched_at: string };
+export type LatestPost = {
+  external_id: string;
+  views: number;
+  captured_at: string;
+  fetched_at: string;
+  last_fetched_at: string;
+};
 
 // Cada post vale pela janela mais recente, nunca pela soma das janelas.
 export function latestPosts(db: DatabaseSync, connectionId: string): LatestPost[] {
   return db
     .prepare(
-      `SELECT external_id, views, captured_at, fetched_at
+      `SELECT external_id, views, captured_at, fetched_at, last_fetched_at
        FROM (
          SELECT *, ROW_NUMBER() OVER (
            PARTITION BY external_id ORDER BY captured_at DESC, id DESC
