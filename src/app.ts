@@ -54,5 +54,7 @@ export function createApp(deps: {
     return c.json({ connection_id: id, syncs: syncRuns(db, id) });
   });
 
+  app.notFound((c) => c.json({ error: "rota não encontrada" }, 404));
+
   return app;
 }
