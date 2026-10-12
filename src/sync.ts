@@ -38,25 +38,30 @@ function store(db: DatabaseSync, connectionId: string, posts: PostSnapshot[], fe
   // mesma janela não entra duas vezes. A mesma janela com views diferentes não é
   // duplicata: é conflito, e o lote inteiro é desfeito.
   const insert = db.prepare(
-    `INSERT INTO post_snapshots (connection_id, external_id, views, captured_at, fetched_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO post_snapshots (connection_id, external_id, views, captured_at, fetched_at, last_fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT (connection_id, external_id, captured_at) DO NOTHING`,
   );
   const existing = db.prepare(
     "SELECT views FROM post_snapshots WHERE connection_id = ? AND external_id = ? AND captured_at = ?",
+  );
+  const touch = db.prepare(
+    "UPDATE post_snapshots SET last_fetched_at = ? WHERE connection_id = ? AND external_id = ? AND captured_at = ?",
   );
   let inserted = 0;
   let duplicates = 0;
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const post of posts) {
-      const result = insert.run(connectionId, post.external_id, post.views, post.captured_at, fetchedAt);
+      const result = insert.run(connectionId, post.external_id, post.views, post.captured_at, fetchedAt, fetchedAt);
       if (Number(result.changes) === 1) {
         inserted += 1;
         continue;
       }
       const saved = existing.get(connectionId, post.external_id, post.captured_at) as { views: number };
       if (saved.views !== post.views) throw new SnapshotConflict(post);
+      // A mesma janela buscada de novo: não duplica, mas registra a busca.
+      touch.run(fetchedAt, connectionId, post.external_id, post.captured_at);
       duplicates += 1;
     }
     db.exec("COMMIT");
@@ -150,13 +155,19 @@ export async function syncConnection(
   };
 }
 
-export type LatestPost = { external_id: string; views: number; captured_at: string; fetched_at: string };
+export type LatestPost = {
+  external_id: string;
+  views: number;
+  captured_at: string;
+  fetched_at: string;
+  last_fetched_at: string;
+};
 
 // Cada post vale pela janela mais recente, nunca pela soma das janelas.
 export function latestPosts(db: DatabaseSync, connectionId: string): LatestPost[] {
   return db
     .prepare(
-      `SELECT external_id, views, captured_at, fetched_at
+      `SELECT external_id, views, captured_at, fetched_at, last_fetched_at
        FROM (
          SELECT *, ROW_NUMBER() OVER (
            PARTITION BY external_id ORDER BY captured_at DESC, id DESC

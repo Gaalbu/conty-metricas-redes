@@ -24,6 +24,7 @@ export function openDatabase(path = ":memory:"): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
+  addMissingColumns(db);
   canonicalizeLegacyCaptures(db);
   return db;
 }
@@ -48,5 +49,15 @@ function canonicalizeLegacyCaptures(db: DatabaseSync): void {
     console.warn(
       `[métricas] ${kept.length} captura(s) antiga(s) equivalem a outra já salva e não foram normalizadas (ids ${kept.join(", ")}). Reconcilie antes de removê-las.`,
     );
+  }
+}
+
+// last_fetched_at chegou depois da primeira versão: bancos antigos ganham a
+// coluna, preenchida com fetched_at.
+function addMissingColumns(db: DatabaseSync): void {
+  const columns = db.prepare("PRAGMA table_info(post_snapshots)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "last_fetched_at")) {
+    db.exec("ALTER TABLE post_snapshots ADD COLUMN last_fetched_at TEXT");
+    db.exec("UPDATE post_snapshots SET last_fetched_at = fetched_at");
   }
 }
